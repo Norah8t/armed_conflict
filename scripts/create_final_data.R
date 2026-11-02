@@ -1,10 +1,10 @@
 library(tidyverse)
 
 # Function: read a World Bank mortality file and convert it from wide to long
-#   filename: name of the csv file inside data/raw
+#   filename: name of the csv file inside data/original
 #   varname:  name to give the mortality column in the output
 clean_wb <- function(filename, varname) {
-  read.csv(file.path("data", "raw", filename), header = TRUE) |>
+  read.csv(file.path("data", "original", filename), header = TRUE) |>
     pivot_longer(cols = starts_with("X"),
                  names_to = "year",
                  names_prefix = "X",       # removes X from year column
@@ -28,7 +28,7 @@ library(janitor)
 
 # Read in disaster data and clean variable names
 # (e.g., "Disaster Type" -> disaster_type, "ISO" -> iso, "Year" -> year)
-disaster <- read.csv(file.path("data", "raw", "disaster.csv"), header = TRUE) |>
+disaster <- read.csv(file.path("data", "original", "disaster.csv"), header = TRUE) |>
   clean_names()
 
 
@@ -54,11 +54,15 @@ disaster_clean <- disaster |>
 
 
 # Read in conflict data (variables: conflict_id, iso, year, best)
-conflict <- read.csv(file.path("data", "raw", "conflict.csv"), header = TRUE)
+conflict <- read.csv(file.path("data", "original", "conflict.csv"), header = TRUE)
 
 conflict_clean <- conflict |>
-  # Classify EACH conflict first (paper: thresholds apply per
-  # country-conflict-year, not to the country's summed deaths)
+  # Each row of conflict.csv is one event, so first add up the deaths for each
+  # conflict in each country-year. The paper applies its thresholds to these
+  # totals: events "cumulatively" reaching 25 or more battle-related deaths.
+  group_by(conflict_id, iso, year) |>
+  summarise(best = sum(best, na.rm = TRUE), .groups = "drop") |>
+  # Classify each conflict-year
   mutate(conf_binary = if_else(best >= 25, 1, 0),
          conf_cat    = case_when(best >= 1000 ~ 2,   # war
                                  best >= 25   ~ 1,   # minor conflict
@@ -67,15 +71,13 @@ conflict_clean <- conflict |>
   group_by(iso, year) |>
   summarise(armconf1 = max(conf_binary),
             armconf3 = max(conf_cat),
-            totdeath = sum(best, na.rm = TRUE),  # kept for the continuous spec
+            totdeath = sum(best),  # kept for the continuous spec
             .groups = "drop") |>
   # b. lag by one year: conflict in year t is paired with outcomes in year t + 1
-  mutate(year = year + 1) |>
-  mutate(armconf3 = factor(armconf3, levels = 0:2,
-                           labels = c("none", "minor", "war")))
+  mutate(year = year + 1)
 
 
-covariates <- read.csv(file.path("data", "raw", "covariates.csv"), header = TRUE) |>
+covariates <- read.csv(file.path("data", "original", "covariates.csv"), header = TRUE) |>
   rename(any_of(c(iso = "ISO")))   # use lowercase iso as the key everywhere
 
 final_data <- covariates |>

@@ -1,0 +1,270 @@
+---
+title: "Exploratory data analysis: maternal mortality and armed conflict"
+subtitle: "CHL5233 · armed_conflict · Week 5"
+author: "Norah Alotaibi"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+    code-fold: true
+    fig-width: 8
+    fig-height: 5
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+library(here)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(naniar)
+library(knitr)
+
+theme_set(theme_minimal(base_size = 12))
+
+# -------------------------------------------------------------------------
+final_file <- here("data", "processed", "final_data.csv")
+
+final_data <- read_csv(final_file, show_col_types = FALSE)
+
+
+
+final_data <- final_data |>
+  rename_with(tolower) |>
+  rename(matmor = maternal_mortality)
+# -------------------------------------------------------------------------
+
+regions <- read_delim(here("data", "original", "regions.txt"), delim = " ",
+                      quote = "\"", locale = locale(encoding = "latin1"),
+                      col_select = c(iso = country_code, region),
+                      show_col_types = FALSE)
+
+
+countries <- read.table(here("data", "original", "countries.txt"),
+                        header = TRUE, quote = "\"") |>
+  rename(iso = ISO)
+
+final_data <- final_data |>
+  select(-any_of("country_name")) |>
+  left_join(countries, by = "iso") |>
+  left_join(regions, by = "iso") |>
+  mutate(conflict = factor(armconf1, levels = c(0, 1),
+                           labels = c("No conflict", "Armed conflict")))
+```
+
+## 1. Data structure
+
+```{r}
+#| label: structure
+tibble(
+  rows               = nrow(final_data),
+  countries          = n_distinct(final_data$iso),
+  years              = n_distinct(final_data$year),
+  first_year         = min(final_data$year),
+  last_year          = max(final_data$year),
+  duplicate_rows     = sum(duplicated(final_data)),
+  duplicate_cy       = sum(duplicated(final_data[c("iso", "year")])),
+  missing_region     = sum(is.na(final_data$region))
+) |>
+  kable(caption = "Expect 3720 rows = 186 countries x 20 years, no duplicates")
+```
+
+```{r}
+#| label: balanced
+# Is the panel balanced? Every country should have all 20 years.
+final_data |>
+  count(iso, name = "n_years") |>
+  count(n_years, name = "n_countries") |>
+  kable(caption = "Number of years per country")
+```
+
+## 2. Distribution of maternal mortality
+
+```{r}
+#| label: summary
+final_data |>
+  summarise(n_obs   = sum(!is.na(matmor)),
+            n_miss  = sum(is.na(matmor)),
+            n_zero  = sum(matmor == 0, na.rm = TRUE),
+            min     = min(matmor, na.rm = TRUE),
+            q1      = quantile(matmor, 0.25, na.rm = TRUE),
+            median  = median(matmor, na.rm = TRUE),
+            mean    = mean(matmor, na.rm = TRUE),
+            q3      = quantile(matmor, 0.75, na.rm = TRUE),
+            max     = max(matmor, na.rm = TRUE)) |>
+  kable(digits = 1,
+        caption = "Maternal mortality ratio (per 100,000 live births)")
+```
+
+```{r}
+#| label: histograms
+#| layout-ncol: 2
+#| fig-width: 5
+#| fig-height: 4
+ggplot(final_data, aes(matmor)) +
+  geom_histogram(bins = 40, fill = "grey40") +
+  labs(x = "Maternal mortality ratio", y = "Country-years",
+       title = "Original scale")
+
+ggplot(final_data, aes(matmor)) +
+  geom_histogram(bins = 40, fill = "grey40") +
+  scale_x_log10() +
+  labs(x = "Maternal mortality ratio (log scale)", y = "Country-years",
+       title = "Log scale")
+```
+
+```{r}
+#| label: by-conflict
+final_data |>
+  filter(!is.na(matmor)) |>
+  group_by(conflict) |>
+  summarise(n = n(), median = median(matmor),
+            q1 = quantile(matmor, 0.25), q3 = quantile(matmor, 0.75)) |>
+  kable(digits = 0, caption = "Maternal mortality by armed conflict status")
+
+ggplot(filter(final_data, !is.na(matmor)), aes(conflict, matmor)) +
+  geom_boxplot(fill = "grey85") +
+  scale_y_log10() +
+  labs(x = NULL, y = "Maternal mortality ratio (log scale)")
+```
+
+## 3. Missingness
+
+```{r}
+#| label: miss-vars
+miss_var_summary(final_data) |>
+  filter(n_miss > 0) |>
+  kable(digits = 1, caption = "Missing values by variable")
+```
+
+```{r}
+#| label: miss-year
+gg_miss_fct(select(final_data, where(is.numeric)), fct = year) +
+  labs(title = "Percent missing by year")
+```
+
+```{r}
+#| label: miss-country
+final_data |>
+  group_by(country_name) |>
+  summarise(years_missing = sum(is.na(matmor))) |>
+  filter(years_missing > 2) |>       # 2018-2019 are missing for everyone
+  arrange(desc(years_missing)) |>
+  kable(caption = "Countries missing maternal mortality beyond 2018-2019")
+```
+
+Missingness by armed conflict status, for all years and for 2000-2017 (the years where the World Bank file has estimates):
+
+```{r}
+#| label: miss-conflict
+bind_rows(
+  `2000-2019` = final_data,
+  `2000-2017` = filter(final_data, year <= 2017),
+  .id = "years"
+) |>
+  group_by(years, conflict) |>
+  summarise(n = n(),
+            n_missing = sum(is.na(matmor)),
+            pct_missing = 100 * mean(is.na(matmor)),
+            .groups = "drop") |>
+  kable(digits = 1, caption = "Missing maternal mortality by conflict status")
+
+final_data |>
+  bind_shadow() |>
+  ggplot(aes(gdp_1000, fill = matmor_NA)) +
+  geom_density(alpha = 0.5) +
+  scale_x_log10() +
+  labs(x = "GDP per capita (1000s, log scale)", fill = "Maternal mortality",
+       title = "Is missingness related to GDP?")
+```
+
+## 4. Trends over time
+
+```{r}
+#| label: overall-trend
+final_data |>
+  filter(!is.na(matmor)) |>
+  group_by(year) |>
+  summarise(median = median(matmor),
+            q1 = quantile(matmor, 0.25),
+            q3 = quantile(matmor, 0.75)) |>
+  ggplot(aes(year, median)) +
+  geom_ribbon(aes(ymin = q1, ymax = q3), fill = "grey85") +
+  geom_line(linewidth = 1) +
+  scale_y_log10() +
+  labs(x = NULL, y = "Maternal mortality ratio (log scale)",
+       title = "Median and interquartile range across countries")
+```
+
+```{r}
+#| label: spaghetti
+#| fig-height: 8
+# Colour is by the conflict status at the start of each segment, so it
+# changes along a line when a country enters or leaves conflict.
+final_data |>
+  filter(!is.na(matmor), !is.na(region)) |>
+  ggplot(aes(year, matmor, group = iso, colour = conflict)) +
+  geom_line(alpha = 0.6, linewidth = 0.4) +
+  scale_y_log10() +
+  scale_colour_manual(values = c("grey60", "firebrick")) +
+  facet_wrap(~ region, ncol = 2) +
+  labs(x = NULL, y = "Maternal mortality ratio (log scale)", colour = NULL) +
+  theme(legend.position = "top")
+```
+
+```{r}
+#| label: rising
+# Countries where maternal mortality was higher in 2017 than in 2000
+final_data |>
+  filter(year %in% c(2000, 2017)) |>
+  select(country_name, year, matmor) |>
+  pivot_wider(names_from = year, values_from = matmor, names_prefix = "y") |>
+  filter(y2017 > y2000) |>
+  mutate(change = y2017 - y2000) |>
+  arrange(desc(change)) |>
+  kable(caption = "Countries with higher maternal mortality in 2017 than in 2000")
+```
+
+```{r}
+#| label: jumps
+# Year-to-year changes of more than 25% (flag, don't remove)
+final_data |>
+  arrange(iso, year) |>
+  group_by(iso) |>
+  mutate(prev = lag(matmor),
+         pct_change = 100 * (matmor - prev) / prev) |>
+  ungroup() |>
+  filter(abs(pct_change) > 25) |>
+  select(country_name, year, prev, matmor, pct_change, conflict) |>
+  kable(digits = 0, caption = "Sudden jumps in maternal mortality (> 25% in one year)")
+```
+
+## 5. Findings
+
+*Edit these after rendering. The first draft is based on the expected values.*
+
+**Structure.** The panel has 3720 rows: 186 countries × 2000–2019, one row per country-year, with no duplicates. It is balanced.
+
+**Distribution.** Maternal mortality is strongly right-skewed: the median is 66 and the mean is 211, with a range of 2 to 2480 per 100,000 live births. On the log scale the distribution is close to symmetric, and there are no zeros, so a log transformation is safe for modelling. Country-years in armed conflict have a much higher median (about 250) than those without (about 50). This is a crude comparison: conflict countries are also poorer and concentrated in Sub-Saharan Africa.
+
+**Missingness.** Missing maternal mortality is almost entirely structural:
+
+* 2018 and 2019 are missing for every country, because the World Bank file stops at 2017.
+* Andorra, Dominica and the Marshall Islands have no estimates in any year.
+
+Within 2000–2017, missingness is about 2% in non-conflict country-years and 0% in conflict country-years. So missingness isn't driven by conflict. It reflects the release schedule and a few very small countries. Implication: restrict the maternal mortality analysis to 2000–2017 and drop the three countries, and say so explicitly, rather than treating them as ordinary missing data. GDP is missing in 62 country-years. Check which countries those are before modelling.
+
+**Trends.** The median declines steadily from about 77 in 2000 to 53 in 2017. A few countries move against the trend, including Syria, Libya, Venezuela, Haiti and the United States.
+
+**Flagged values (to investigate, not remove):**
+
+* Iraq rises from 74 to 136 in 2003, the year of the invasion. This is plausible and consistent with conflict.
+* Most other jumps over 25% are in low-mortality countries such as Bahrain, Cyprus and Norway, where a change of a few units is a large percentage. These are probably noise in small numbers.
+* In the infant and under-5 series, visible spikes match known disasters: Haiti 2010 (earthquake), Sri Lanka 2004 (tsunami), Myanmar 2008 (Cyclone Nargis), and Syria 2012–2016. These are real events, not errors. They matter for modelling because the earthquake indicator only partly captures them.
+
+**Next steps.** Repeat the distribution and missingness checks for the infant, neonatal and under-5 outcomes. Decide how to handle the 2018–2019 years for maternal mortality. Look at the covariates with missing values, especially GDP.
